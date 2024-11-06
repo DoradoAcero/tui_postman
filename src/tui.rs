@@ -35,10 +35,10 @@ use ratatui::{
     layout::{Constraint, Layout, Position},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, List, ListItem, Paragraph},
+    widgets::{Block, List, ListDirection, ListItem, Paragraph, Tabs, Wrap},
     DefaultTerminal, Frame,
 };
-use rust_http::client::HttpClient;
+use rust_http::{client::HttpClient, http::{HttpMethod, HttpRequest, HttpResponse, HTTP_METHODS}};
 
 /// App holds the state of the application
 pub struct App {
@@ -48,21 +48,25 @@ pub struct App {
     body_input: String,
     /// Position of cursor in the editor area.
     character_index: usize,
-    /// Current input mode
-    input_mode: InputMode,
-    /// History of recorded messages
-    messages: Vec<String>,
 
     error_message: Option<String>,
 
     client: HttpClient,
+
+    responses: Vec<HttpResponse>,
+
+    method_index: usize,
+
+    input_order: Vec<InputMode>,
+    input_index: usize, 
 }
 
+#[derive(PartialEq)]
 enum InputMode {
-    Normal,
     EditingUrl,
     EditingHeaders,
     EditingBody,
+    EditingMethod,
 }
 
 impl App {
@@ -70,29 +74,43 @@ impl App {
         let empty_string = "".to_string();
 
         Self {
-            input_mode: InputMode::Normal,
-            messages: Vec::new(),
+            input_order: vec![InputMode::EditingMethod, InputMode::EditingUrl, InputMode::EditingHeaders, InputMode::EditingBody],
+            input_index: 3,
             character_index: 0,
             error_message: None,
             url_input: server_addr,
             headers_input: empty_string.clone(),
             body_input: empty_string,
             client,
+            responses: vec![],
+            method_index: 0,
         }
     }
 
     fn move_cursor_left(&mut self) {
+        if *self.get_input_mode() == InputMode::EditingMethod {
+            self.method_index =  (self.method_index + HTTP_METHODS.len() - 1) % HTTP_METHODS.len();
+            return
+        }
         let cursor_moved_left = self.character_index.saturating_sub(1);
         self.character_index = self.clamp_cursor(cursor_moved_left);
     }
 
     fn move_cursor_right(&mut self) {
+        if *self.get_input_mode() == InputMode::EditingMethod {
+            self.method_index =  (self.method_index + HTTP_METHODS.len() + 1) % HTTP_METHODS.len();
+            return
+        }
         let cursor_moved_right = self.character_index.saturating_add(1);
         self.character_index = self.clamp_cursor(cursor_moved_right);
     }
 
+    fn get_input_mode(&self) -> &InputMode {
+        self.input_order.get(self.input_index).unwrap()
+    }
+
     fn get_current_input_mut(&mut self) -> &mut String {
-        match self.input_mode {
+        match self.get_input_mode() {
             InputMode::EditingBody => {
                 &mut self.body_input
             },
@@ -107,7 +125,7 @@ impl App {
     }
 
     fn get_current_input(&self) -> &String {
-        match self.input_mode {
+        match self.get_input_mode() {
             InputMode::EditingBody => {
                 &self.body_input
             },
@@ -152,9 +170,9 @@ impl App {
             let from_left_to_current_index = current_index - 1;
 
             // Getting all characters before the selected character.
-            let before_char_to_delete = self.get_current_input_mut().chars().take(from_left_to_current_index);
+            let before_char_to_delete = self.get_current_input().chars().take(from_left_to_current_index);
             // Getting all characters after selected character.
-            let after_char_to_delete = self.get_current_input_mut().chars().skip(current_index);
+            let after_char_to_delete = self.get_current_input().chars().skip(current_index);
 
             // Put all characters together except the selected one.
             // By leaving the selected one out, it is forgotten and therefore deleted.
@@ -168,8 +186,27 @@ impl App {
         new_cursor_pos.clamp(0, self.get_current_input().chars().count())
     }
 
-    fn reset_cursor(&mut self) {
-        self.character_index = 0;
+    fn send_req(&mut self) {
+        let req = HttpRequest {
+            method: HTTP_METHODS[self.method_index].clone(),
+            endpoint: self.url_input.clone(),
+            headers: vec![], // TODO
+            body: self.body_input.clone(),
+        };
+
+        match self.client.send(req, &self.url_input) {
+            Ok(res) => self.responses.insert(0,res),
+            Err(e) => println!("{}", e),
+        }
+    }
+
+    pub fn move_input_mode_up(&mut self) {
+        let index_shift = self.input_index + self.input_order.len() - 1;
+        self.input_index = index_shift % self.input_order.len();
+    }
+    pub fn move_input_mode_down(&mut self) {
+        let index_shift = self.input_index + self.input_order.len() + 1;
+        self.input_index = index_shift % self.input_order.len();
     }
 
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -177,26 +214,17 @@ impl App {
             terminal.draw(|frame| self.draw(frame))?;
 
             if let Event::Key(key) = event::read()? {
-                match self.input_mode {
-                    InputMode::Normal => match key.code {
-                        KeyCode::Char('e') => {
-                            self.input_mode = InputMode::Editing;
-                        }
-                        KeyCode::Char('q') => {
-                            return Ok(());
-                        }
-                        _ => {}
-                    },
-                    InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
-                        KeyCode::Enter => self.submit_message(),
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Enter => self.send_req(),
                         KeyCode::Char(to_insert) => self.enter_char(to_insert),
                         KeyCode::Backspace => self.delete_char(),
                         KeyCode::Left => self.move_cursor_left(),
                         KeyCode::Right => self.move_cursor_right(),
-                        KeyCode::Esc => self.input_mode = InputMode::Normal,
-                        _ => {}
-                    },
-                    InputMode::Editing => {}
+                        KeyCode::Down => self.move_input_mode_down(),
+                        KeyCode::Up => self.move_input_mode_up(),
+                        _ => {},
+                    }
                 }
             }
         }
@@ -204,93 +232,43 @@ impl App {
 
     fn draw(&self, frame: &mut Frame) {
         let vertical = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Min(1),
         ]);
-        let [help_area, error_area, input_area, messages_area] = vertical.areas(frame.area());
-        let horo_help = Layout::horizontal([
-            Constraint::Min(20),
-            Constraint::Length(15),
-            Constraint::Length(15),
-            Constraint::Length(15),
+        let [method_area, url_area, header_area, big_area] = vertical.areas(frame.area());
+
+        let horizontal = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Min(1),
         ]);
+        let [body_area, response_area] = horizontal.areas(big_area);
 
-        let [help_message_area, basic_guess_area, complex_guess_area, complex_guess_area_2] = horo_help.areas(help_area);
+        let methods = Tabs::new(HTTP_METHODS.iter().map(|method| format!("{:.?}", method)))
+            .block(Block::bordered().title("Methods"))
+            .select(self.method_index)
+            .style(Style::default().fg(if *self.get_input_mode() == InputMode::EditingMethod {Color::Yellow} else {Color::White}));
+        frame.render_widget(methods, method_area);
 
-        let (msg, style) = match self.input_mode {
-            InputMode::Normal => (
-                vec![
-                    "Press ".into(),
-                    "q".bold(),
-                    " to exit, ".into(),
-                    "e".bold(),
-                    " to start editing.".bold(),
-                ],
-                Style::default().add_modifier(Modifier::RAPID_BLINK),
-            ),
-            InputMode::Editing => (
-                vec![
-                    "Press ".into(),
-                    "Esc".bold(),
-                    " to stop editing, ".into(),
-                    "Enter".bold(),
-                    " to record the message".into(),
-                ],
-                Style::default(),
-            ),
-        };
-
-        if self.won {
-            frame.render_widget(Text::from("CONGRATULATIONS!!! You guessed the correct word").patch_style(Style::default().fg(Color::Green)), error_area)
-        } else {
-            match &self.error_message {
-                Some(e_msg) => frame.render_widget(Text::from(e_msg.clone()).patch_style(Style::default().fg(Color::Red)), error_area),
-                _ => (),
-            };
-        }
-        let text = Text::from(Line::from(msg)).patch_style(style);
-        let help_message = Paragraph::new(text);
-        frame.render_widget(help_message, help_message_area);
-
-        let areas = vec![basic_guess_area, complex_guess_area, complex_guess_area_2];
-        for (i, area) in areas.into_iter().enumerate() {
-            frame.render_widget(self.ai_guesses.get(i).unwrap(), area);
-        }
-
-        let input = Paragraph::new(self.input.as_str())
-            .style(match self.input_mode {
-                InputMode::Normal => Style::default(),
-                InputMode::Editing => Style::default().fg(Color::Yellow),
-            })
+        let url_input = Paragraph::new(self.url_input.as_str())
+            .style(Style::default().fg(if *self.get_input_mode() == InputMode::EditingUrl {Color::Yellow} else {Color::White}))
             .block(Block::bordered().title("Input"));
-        frame.render_widget(input, input_area);
-        match self.input_mode {
-            // Hide the cursor. `Frame` does this by default, so we don't need to do anything here
-            InputMode::Normal => {}
+        frame.render_widget(url_input, url_area);
 
-            // Make the cursor visible and ask ratatui to put it at the specified coordinates after
-            // rendering
-            #[allow(clippy::cast_possible_truncation)]
-            InputMode::Editing => frame.set_cursor_position(Position::new(
-                // Draw the cursor at the current position in the input field.
-                // This position is can be controlled via the left and right arrow key
-                input_area.x + self.character_index as u16 + 1,
-                // Move one line down, from the border to the input line
-                input_area.y + 1,
-            )),
-        }
+        let headers_input = Paragraph::new(self.headers_input.as_str())
+            .style(Style::default().fg(if *self.get_input_mode() == InputMode::EditingHeaders {Color::Yellow} else {Color::White}))
+            .block(Block::bordered().title("Headers"));
+        frame.render_widget(headers_input, header_area);
 
-        let messages: Vec<ListItem> = self
-            .messages
-            .iter()
-            .map(|m| {
-                let content = self.style_word(m.clone());
-                ListItem::new(content.clone())
-            })
-            .collect();
-        let messages = List::new(messages).block(Block::bordered().title("Guesses"));
-        frame.render_widget(messages, messages_area);
+        let body_input = Paragraph::new(self.body_input.as_str())
+            .style(Style::default().fg(if *self.get_input_mode() == InputMode::EditingBody {Color::Yellow} else {Color::White}))
+            .block(Block::bordered().title("Body"))
+            .wrap(Wrap {trim: true});
+        frame.render_widget(body_input, body_area);
+        
+        let response = List::new(self.responses.iter().map(|res| format!("{:#?}\n---------------------------------", res)))
+            .block(Block::bordered().title("Responses"));
+        frame.render_widget(response, response_area);
     }
 }
