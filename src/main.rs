@@ -1,23 +1,20 @@
-use std::io::Error;
+mod tui;
 
-use rust_http::{client::HttpClient, echo_server::setup_server, http::{HttpMethod, HttpRequest}};
+use color_eyre::Result;
+use rust_http::{client::HttpClient, echo_server::setup_server};
+use tui::App;
 
-fn main() -> Result<(), Error> {
+
+fn main() -> Result<()> {
     let server_addr ="127.0.0.1:8004".to_string();
     setup_server(&server_addr)?;
 
     let client_addr = "127.0.0.1:8005".to_string();
     let client = HttpClient::new(&client_addr)?;
-    
-    let req = HttpRequest {
-        method: HttpMethod::Get,
-        endpoint: "localhost:8000".to_string(),
-        headers: vec![],
-        body: "Hello, ".to_string()
-    };
 
-    let res = client.send(req, &server_addr)?;
-    println!("{:.?}", res);
-
-    Ok(())
+    color_eyre::install()?;
+    let terminal = ratatui::init();
+    let app_result = App::new(client, server_addr).run(terminal);
+    ratatui::restore();
+    app_result
 }
