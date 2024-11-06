@@ -27,18 +27,16 @@
 //
 // See also https://github.com/rhysd/tui-textarea and https://github.com/sayanarijit/tui-input/
 
-use std::collections::HashMap;
 
 use color_eyre::Result;
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
-    layout::{Constraint, Layout, Position},
-    style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text},
-    widgets::{Block, List, ListDirection, ListItem, Paragraph, Tabs, Wrap},
+    layout::{Constraint, Layout},
+    style::{Color, Style},
+    widgets::{Block, List, Paragraph, Tabs, Wrap},
     DefaultTerminal, Frame,
 };
-use rust_http::{client::HttpClient, http::{HttpMethod, HttpRequest, HttpResponse, HTTP_METHODS}};
+use rust_http::{client::HttpClient, http::{HttpRequest, HttpResponse, HTTP_METHODS}};
 
 /// App holds the state of the application
 pub struct App {
