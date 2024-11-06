@@ -1,0 +1,7 @@
+[package]
+name = "tui_postman"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rust_http = {path = "./rust_http"}
