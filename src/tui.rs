@@ -185,14 +185,15 @@ impl App {
     }
 
     fn send_req(&mut self) {
+        let (url, endpoint) = self.url_input.split_once("/").unwrap_or((&self.url_input, ""));
         let req = HttpRequest {
             method: HTTP_METHODS[self.method_index].clone(),
-            endpoint: self.url_input.clone(),
+            endpoint: format!("/{}",endpoint).to_string(),
             headers: vec![], // TODO
             body: self.body_input.clone(),
         };
 
-        match self.client.send(req, &self.url_input) {
+        match self.client.send(req, &url.to_string()) {
             Ok(res) => self.responses.insert(0,res),
             Err(e) => println!("{}", e),
         }
