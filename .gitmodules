@@ -1,3 +1,4 @@
 [submodule "rust_http"]
 	path = rust_http
 	url = https://github.com/DoradoAcero/rust_http.git
+	branch = master
